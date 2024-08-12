@@ -53,7 +53,7 @@ ckpt_interval_minutes: 15 # save checkpoint every N min
 number_of_epochs: 200
 batch_size: 32
 lr: 0.0002
-base_lr: 0.00000001
+base_lr: 0.0002
 max_lr: !ref <lr>
 step_size: 65000
 
@@ -88,12 +88,35 @@ compute_features: !new:speechbrain.lobes.features.Fbank
     win_length: 20
     hop_length: 10
 
+
+  
+codec: !new:train.DiscreteSSL_ESC50
+   ssl_model: cnn_14
+   kmeans_path: kmeans-cluster-100
+   num_clusters: 100  # this is actually 128 -- to fix in cleaned-up repo 
+   layers_num: [0, 1, 2, 3]
+
+
+discrete_embedding_layer: !new:custom_model.Discrete_EmbeddingLayer
+   num_codebooks: 4 
+   vocab_size: 129  # num_clusters + 1
+   emb_dim: 512 
+
+
+attention_mlp: !new:custom_model.AttentionMLP
+   input_dim: 512
+   hidden_dim: 512
+
+avg_pool: !new:speechbrain.nnet.pooling.StatisticsPooling
+   return_std: False
+
 embedding_model: !new:speechbrain.lobes.models.Cnn14.Cnn14
     mel_bins: !ref <n_mels>
     emb_dim: 2048
+    return_reps: True
 
 classifier: !new:torch.nn.Linear
-    in_features: 2048
+    in_features: 512
     out_features: !ref <out_n_neurons>
 
 epoch_counter: !new:speechbrain.utils.epoch_loop.EpochCounter
@@ -122,6 +145,10 @@ modules:
     compute_features: !ref <compute_features>
     embedding_model: !ref <embedding_model>
     classifier: !ref <classifier>
+    attention_mlp: !ref <attention_mlp>
+    codec: !ref <codec>
+    discrete_embedding_layer: !ref <discrete_embedding_layer>
+    avg_pool: !ref <avg_pool>
 
 compute_cost: !new:speechbrain.nnet.losses.LogSoftmaxWrapper
     loss_fn: !new:speechbrain.nnet.losses.AdditiveAngularMargin
@@ -151,6 +178,9 @@ checkpointer: !new:speechbrain.utils.checkpoints.Checkpointer
         embedding_model: !ref <embedding_model>
         classifier: !ref <classifier>
         counter: !ref <epoch_counter>
+        attention_mlp: !ref <attention_mlp>
+        codec: !ref <codec>
+        discrete_embedding_layer: !ref <discrete_embedding_layer>
 
 use_pretrained: True
 # If you do not want to use the pretrained encoder
