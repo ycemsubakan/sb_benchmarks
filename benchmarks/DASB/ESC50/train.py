@@ -68,33 +68,8 @@ class ESC50Brain(sb.core.Brain):
         if (not self.hparams.use_melspectra) or self.hparams.use_log1p_mel:
             net_input = torch.log1p(net_input)
 
-        # Embeddings + sound classifier
-        if hasattr(self.modules.embedding_model, "config"):
-            # Hugging Face model
-            config = self.modules.embedding_model.config
-            # Resize to match expected resolution
-            net_input = torchvision.transforms.functional.resize(
-                net_input, (config.image_size, config.image_size)
-            )
-            # Expand to have 3 channels
-            net_input = net_input[:, None, ...].expand(-1, 3, -1, -1)
-            if config.model_type == "focalnet":
-                embeddings = self.modules.embedding_model(
-                    net_input
-                ).feature_maps[-1]
-                embeddings = embeddings.mean(dim=(-1, -2))
-            elif config.model_type == "vit":
-                embeddings = self.modules.embedding_model(
-                    net_input
-                ).last_hidden_state.movedim(-1, -2)
-                embeddings = embeddings.mean(dim=-1)
-            else:
-                raise NotImplementedError
-        else:
-            # SpeechBrain model
-            embeddings, h = self.modules.embedding_model(net_input)
-
         with torch.no_grad():
+            embeddings, h = self.hparams.embedding_model(net_input)
             self.hparams.codec.to(self.device).eval()
             tokens, _ = self.hparams.codec(h)
 

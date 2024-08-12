@@ -143,7 +143,6 @@ modules:
     compute_stft: !ref <compute_stft>
     compute_fbank: !ref <compute_fbank>
     compute_features: !ref <compute_features>
-    embedding_model: !ref <embedding_model>
     classifier: !ref <classifier>
     attention_mlp: !ref <attention_mlp>
     codec: !ref <codec>
@@ -175,7 +174,6 @@ error_stats: !name:speechbrain.utils.metric_stats.MetricStats
 checkpointer: !new:speechbrain.utils.checkpoints.Checkpointer
     checkpoints_dir: !ref <save_folder>
     recoverables:
-        embedding_model: !ref <embedding_model>
         classifier: !ref <classifier>
         counter: !ref <epoch_counter>
         attention_mlp: !ref <attention_mlp>
