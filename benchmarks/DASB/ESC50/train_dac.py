@@ -60,7 +60,7 @@ class ESC50Brain(sb.core.Brain):
             tokens, _ = self.hparams.codec(
                 wavs.unsqueeze(1), n_quantizers=self.hparams.num_codebooks
             )
-        embeddings = self.modules.discrete_embedding_layer(tokens)
+        embeddings = self.modules.discrete_embedding_layer(tokens.movedim(-2, -1))
         att_w = self.modules.attention_mlp(embeddings)
         feats = torch.matmul(att_w.transpose(2, -1), embeddings).squeeze(-2)
         # last dim will be used for AdaptativeAVG pool
