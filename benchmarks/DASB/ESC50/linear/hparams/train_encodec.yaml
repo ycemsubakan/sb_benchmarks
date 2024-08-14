@@ -13,10 +13,10 @@ seed: 1234
 __set_seed: !!python/object/apply:torch.manual_seed [!ref <seed>]
 
 # Set up folders for reading from and writing to
-data_folder: !PLACEHOLDER  # e.g., /localscratch/ESC-50-master
+data_folder: data  # e.g., /localscratch/ESC-50-master
 audio_data_folder: !ref <data_folder>/audio
 
-experiment_name: !ref cnn14-esc50
+experiment_name: !ref encodec-low
 output_folder: !ref ./results/<experiment_name>/<seed>
 save_folder: !ref <output_folder>/save
 train_log: !ref <output_folder>/train_log.txt
@@ -27,8 +27,6 @@ test_only: False
 wham_folder: null # Set it if add_wham_noise is True.
 wham_audio_folder: !ref <wham_folder>/tr
 
-
-sample_rate: 16000
 signal_length_s: 5
 
 # Tensorboard logs
@@ -77,75 +75,62 @@ dataloader_options:
     shuffle: !ref <shuffle>
     num_workers: 0
 
-# Functions
-compute_features: !new:speechbrain.lobes.features.Fbank
-    n_mels: !ref <n_mels>
-    left_frames: !ref <left_frames>
-    right_frames: !ref <right_frames>
-    deltas: !ref <deltas>
-    sample_rate: !ref <sample_rate>
-    n_fft: 1024
-    win_length: 20
-    hop_length: 10
-
+### Config for Tokenizer
+# EnCodec parameters
+# sample_rate: [24000, 24000, 24000, 24000]
+# vocab_size: [1024, 1024, 1024, 1024]
+# bandwidth: [1.5, 3.0, 6.0, 12.0, 24.0]
+# num_codebooks: [2, 4, 8, 16, 32]
+vocab_size: 1024
+bandwidth: 1.5
+num_codebooks: 2
+sample_rate: 24000
+# Feature parameters
+encoder_dim: 512
+# If set to True, the encoder_dim should be set to the dim of the tokenizer. For encodec it is 128.
+init_embedding: False
+freeze_embedding: False
 
   
-codec: !new:train.DiscreteSSL_ESC50
-   ssl_model: cnn_14
-   kmeans_path: kmeans-cluster-100
-   num_clusters: 100  # this is actually 128 -- to fix in cleaned-up repo 
-   layers_num: [0, 1, 2, 3]
+# Modules
+# EnCodec model (see https://huggingface.co/docs/transformers/v4.31.0/en/model_doc/encodec)
+codec: !new:speechbrain.lobes.models.huggingface_transformers.encodec.Encodec
+    source: facebook/encodec_24khz  # Only the 24kHz version supports mono audio
+    save_path: !ref <save_folder>
+    sample_rate: !ref <sample_rate>
+    bandwidth: !ref <bandwidth>
+    flat_embeddings: False
+    freeze: True
+    renorm_embeddings: False
 
 
 discrete_embedding_layer: !new:custom_model.Discrete_EmbeddingLayer
-   num_codebooks: 4 
-   vocab_size: 129  # num_clusters + 1
-   emb_dim: 512 
-
+    num_codebooks: !ref <num_codebooks>
+    vocab_size: !ref <vocab_size>
+    emb_dim: !ref <encoder_dim>
+    freeze: !ref <freeze_embedding>
+    init: !ref <init_embedding>
 
 attention_mlp: !new:custom_model.AttentionMLP
-   input_dim: 512
-   hidden_dim: 512
+    input_dim: !ref <encoder_dim>
+    hidden_dim: !ref <encoder_dim>
+
 
 avg_pool: !new:speechbrain.nnet.pooling.StatisticsPooling
    return_std: False
 
-embedding_model: !new:speechbrain.lobes.models.Cnn14.Cnn14
-    mel_bins: !ref <n_mels>
-    emb_dim: 2048
-    return_reps: True
 
 classifier: !new:torch.nn.Linear
-    in_features: 512
+    in_features: !ref <encoder_dim>
     out_features: !ref <out_n_neurons>
 
 epoch_counter: !new:speechbrain.utils.epoch_loop.EpochCounter
     limit: !ref <number_of_epochs>
 
-# pre-processing
-n_fft: 1024
-spec_mag_power: 0.5
-hop_length: 11.6099
-win_length: 23.2199
-compute_stft: !new:speechbrain.processing.features.STFT
-    n_fft: !ref <n_fft>
-    hop_length: !ref <hop_length>
-    win_length: !ref <win_length>
-    sample_rate: !ref <sample_rate>
-
-compute_fbank: !new:speechbrain.processing.features.Filterbank
-    n_mels: 80
-    n_fft: !ref <n_fft>
-    sample_rate: !ref <sample_rate>
-    log_mel: False
 
 modules:
-    compute_stft: !ref <compute_stft>
-    compute_fbank: !ref <compute_fbank>
-    compute_features: !ref <compute_features>
     classifier: !ref <classifier>
     attention_mlp: !ref <attention_mlp>
-    codec: !ref <codec>
     discrete_embedding_layer: !ref <discrete_embedding_layer>
     avg_pool: !ref <avg_pool>
 
@@ -179,15 +164,3 @@ checkpointer: !new:speechbrain.utils.checkpoints.Checkpointer
         attention_mlp: !ref <attention_mlp>
         codec: !ref <codec>
         discrete_embedding_layer: !ref <discrete_embedding_layer>
-
-use_pretrained: True
-# If you do not want to use the pretrained encoder
-# you can simply delete pretrained_encoder field,
-# or set use_pretrained=False
-embedding_model_path: speechbrain/cnn14-esc50/embedding_model.ckpt
-pretrained_encoder: !new:speechbrain.utils.parameter_transfer.Pretrainer
-    collect_in: !ref <save_folder>
-    loadables:
-        embedding_model: !ref <embedding_model>
-    paths:
-        embedding_model: !ref <embedding_model_path>
