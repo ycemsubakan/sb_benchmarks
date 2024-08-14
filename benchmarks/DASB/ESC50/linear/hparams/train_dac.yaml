@@ -13,10 +13,10 @@ seed: 1234
 __set_seed: !!python/object/apply:torch.manual_seed [!ref <seed>]
 
 # Set up folders for reading from and writing to
-data_folder: !PLACEHOLDER  # e.g., /localscratch/ESC-50-master
+data_folder: data  # e.g., /localscratch/ESC-50-master
 audio_data_folder: !ref <data_folder>/audio
 
-experiment_name: !ref dac-medium
+experiment_name: !ref dac-low
 output_folder: !ref ./results/<experiment_name>/<seed>
 save_folder: !ref <output_folder>/save
 train_log: !ref <output_folder>/train_log.txt
@@ -85,7 +85,7 @@ dataloader_options:
 model_type: 24khz
 vocab_size: 1024
 model_bitrate: 8kbps
-num_codebooks: 8  # NOTE: must be smaller or equal to the maximum number of codebooks for the given model type
+num_codebooks: 2  # NOTE: must be smaller or equal to the maximum number of codebooks for the given model type
 sample_rate: 24000
 
 # Feature parameters

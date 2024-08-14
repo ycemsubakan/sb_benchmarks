@@ -1,11 +1,10 @@
 # #################################
 # Basic training parameters for sound classification using the ESC50 dataset.
-# This recipe uses a FocalNet backbone for classification.
+# This recipe uses the ecapa-tdnn backbone for classification.
 #
 # Authors:
 #  * Cem Subakan 2022, 2023
-#  * Francesco Paissan 2022, 2023
-#  * Luca Della Libera 2024
+#  * Francesco Paissan 2022, 2023, 2024
 #  (based on the SpeechBrain UrbanSound8k recipe)
 # #################################
 
@@ -14,10 +13,10 @@ seed: 1234
 __set_seed: !!python/object/apply:torch.manual_seed [!ref <seed>]
 
 # Set up folders for reading from and writing to
-data_folder: !PLACEHOLDER  # e.g., /localscratch/ESC-50-master
+data_folder: data  # e.g., /localscratch/ESC-50-master
 audio_data_folder: !ref <data_folder>/audio
 
-experiment_name: focalnet-base-esc50
+experiment_name: !ref cnn14-esc50-low
 output_folder: !ref ./results/<experiment_name>/<seed>
 save_folder: !ref <output_folder>/save
 train_log: !ref <output_folder>/train_log.txt
@@ -25,11 +24,12 @@ train_log: !ref <output_folder>/train_log.txt
 add_wham_noise: False
 test_only: False
 
-wham_folder: null # Set it if add_wham_noise is True
+wham_folder: null # Set it if add_wham_noise is True.
 wham_audio_folder: !ref <wham_folder>/tr
 
-use_melspectra: False
-use_log1p_mel: False
+
+sample_rate: 16000
+signal_length_s: 5
 
 # Tensorboard logs
 use_tensorboard: False
@@ -50,15 +50,22 @@ skip_manifest_creation: False
 ckpt_interval_minutes: 15 # save checkpoint every N min
 
 # Training parameters
-number_of_epochs: 100
-batch_size: 16
+number_of_epochs: 200
+batch_size: 32
 lr: 0.0002
-base_lr: 0.00000001
+base_lr: 0.0002
 max_lr: !ref <lr>
 step_size: 65000
-sample_rate: 16000
 
-signal_length_s: 5
+
+# Feature parameters
+n_mels: 80
+left_frames: 0
+right_frames: 0
+deltas: False
+
+use_melspectra: True
+use_log1p_mel: True
 
 # Number of classes
 out_n_neurons: 50
@@ -70,57 +77,77 @@ dataloader_options:
     shuffle: !ref <shuffle>
     num_workers: 0
 
-# Augmentation
-drop_freq: !new:speechbrain.augment.time_domain.DropFreq
-    drop_freq_low: 0  # Min frequency band dropout probability
-    drop_freq_high: 1  # Max frequency band dropout probability
-    drop_freq_count_low: 1  # Min number of frequency bands to drop
-    drop_freq_count_high: 3  # Max number of frequency bands to drop
-    drop_freq_width: 0.05  # Width of frequency bands to drop
+# Functions
+compute_features: !new:speechbrain.lobes.features.Fbank
+    n_mels: !ref <n_mels>
+    left_frames: !ref <left_frames>
+    right_frames: !ref <right_frames>
+    deltas: !ref <deltas>
+    sample_rate: !ref <sample_rate>
+    n_fft: 1024
+    win_length: 20
+    hop_length: 10
 
-drop_chunk: !new:speechbrain.augment.time_domain.DropChunk
-    drop_length_low: 1  # Min number of audio chunks to drop
-    drop_length_high: 5  # Max number of audio chunks to drop
-    drop_count_low: 1000  # Min length of audio chunks to drop
-    drop_count_high: 2000  # Max length of audio chunks to drop
 
-augmentation: !new:speechbrain.augment.augmenter.Augmenter
-    parallel_augment: False
-    concat_original: False
-    repeat_augment: 1
-    shuffle_augmentations: False
-    min_augmentations: 2
-    max_augmentations: 2
-    augment_prob: 0.75
-    augmentations: [!ref <drop_freq>, !ref <drop_chunk>]
+  
+codec: !new:train.DiscreteSSL_ESC50
+   ssl_model: cnn_14
+   kmeans_path: kmeans-cluster-100
+   num_clusters: 100  # this is actually 128 -- to fix in cleaned-up repo 
+   layers_num: [0, 1]
 
-# Model
-embedding_model: !apply:transformers.FocalNetBackbone.from_pretrained [microsoft/focalnet-base]
 
-classifier: !new:speechbrain.lobes.models.ECAPA_TDNN.Classifier
-    input_size: 1024
-    out_neurons: !ref <out_n_neurons>
-    lin_blocks: 1
+discrete_embedding_layer: !new:custom_model.Discrete_EmbeddingLayer
+   num_codebooks: 4 
+   vocab_size: 129  # num_clusters + 1
+   emb_dim: 512 
+
+
+attention_mlp: !new:custom_model.AttentionMLP
+   input_dim: 512
+   hidden_dim: 512
+
+avg_pool: !new:speechbrain.nnet.pooling.StatisticsPooling
+   return_std: False
+
+embedding_model: !new:speechbrain.lobes.models.Cnn14.Cnn14
+    mel_bins: !ref <n_mels>
+    emb_dim: 2048
+    return_reps: True
+
+classifier: !new:torch.nn.Linear
+    in_features: 512
+    out_features: !ref <out_n_neurons>
 
 epoch_counter: !new:speechbrain.utils.epoch_loop.EpochCounter
     limit: !ref <number_of_epochs>
 
-# Pre-processing
+# pre-processing
 n_fft: 1024
 spec_mag_power: 0.5
 hop_length: 11.6099
 win_length: 23.2199
-
 compute_stft: !new:speechbrain.processing.features.STFT
     n_fft: !ref <n_fft>
     hop_length: !ref <hop_length>
     win_length: !ref <win_length>
     sample_rate: !ref <sample_rate>
 
+compute_fbank: !new:speechbrain.processing.features.Filterbank
+    n_mels: 80
+    n_fft: !ref <n_fft>
+    sample_rate: !ref <sample_rate>
+    log_mel: False
+
 modules:
     compute_stft: !ref <compute_stft>
-    embedding_model: !ref <embedding_model>
+    compute_fbank: !ref <compute_fbank>
+    compute_features: !ref <compute_features>
     classifier: !ref <classifier>
+    attention_mlp: !ref <attention_mlp>
+    codec: !ref <codec>
+    discrete_embedding_layer: !ref <discrete_embedding_layer>
+    avg_pool: !ref <avg_pool>
 
 compute_cost: !new:speechbrain.nnet.losses.LogSoftmaxWrapper
     loss_fn: !new:speechbrain.nnet.losses.AdditiveAngularMargin
@@ -147,6 +174,20 @@ error_stats: !name:speechbrain.utils.metric_stats.MetricStats
 checkpointer: !new:speechbrain.utils.checkpoints.Checkpointer
     checkpoints_dir: !ref <save_folder>
     recoverables:
-        embedding_model: !ref <embedding_model>
         classifier: !ref <classifier>
         counter: !ref <epoch_counter>
+        attention_mlp: !ref <attention_mlp>
+        codec: !ref <codec>
+        discrete_embedding_layer: !ref <discrete_embedding_layer>
+
+use_pretrained: True
+# If you do not want to use the pretrained encoder
+# you can simply delete pretrained_encoder field,
+# or set use_pretrained=False
+embedding_model_path: speechbrain/cnn14-esc50/embedding_model.ckpt
+pretrained_encoder: !new:speechbrain.utils.parameter_transfer.Pretrainer
+    collect_in: !ref <save_folder>
+    loadables:
+        embedding_model: !ref <embedding_model>
+    paths:
+        embedding_model: !ref <embedding_model_path>

@@ -1,11 +1,10 @@
 # #################################
 # Basic training parameters for sound classification using the ESC50 dataset.
-# This recipe uses a ViT backbone for classification.
+# This recipe uses the ecapa-tdnn backbone for classification.
 #
 # Authors:
 #  * Cem Subakan 2022, 2023
-#  * Francesco Paissan 2022, 2023
-#  * Luca Della Libera 2024
+#  * Francesco Paissan 2022, 2023, 2024
 #  (based on the SpeechBrain UrbanSound8k recipe)
 # #################################
 
@@ -14,21 +13,21 @@ seed: 1234
 __set_seed: !!python/object/apply:torch.manual_seed [!ref <seed>]
 
 # Set up folders for reading from and writing to
-data_folder: !PLACEHOLDER  # e.g., /localscratch/ESC-50-master
+data_folder: data  # e.g., /localscratch/ESC-50-master
 audio_data_folder: !ref <data_folder>/audio
 
-experiment_name: vit-base-esc50
+experiment_name: !ref dac-low
 output_folder: !ref ./results/<experiment_name>/<seed>
 save_folder: !ref <output_folder>/save
 train_log: !ref <output_folder>/train_log.txt
 
 add_wham_noise: False
-use_melspectra: False
-use_log1p_mel: False
 test_only: False
 
-wham_folder: null # Set it if add_wham_noise is True
+wham_folder: null # Set it if add_wham_noise is True.
 wham_audio_folder: !ref <wham_folder>/tr
+
+signal_length_s: 5
 
 # Tensorboard logs
 use_tensorboard: False
@@ -49,15 +48,22 @@ skip_manifest_creation: False
 ckpt_interval_minutes: 15 # save checkpoint every N min
 
 # Training parameters
-number_of_epochs: 100
-batch_size: 16
+number_of_epochs: 200
+batch_size: 32
 lr: 0.0002
-base_lr: 0.00000001
+base_lr: 0.0002
 max_lr: !ref <lr>
 step_size: 65000
 
-sample_rate: 16000
-signal_length_s: 5
+
+# Feature parameters
+n_mels: 80
+left_frames: 0
+right_frames: 0
+deltas: False
+
+use_melspectra: True
+use_log1p_mel: True
 
 # Number of classes
 out_n_neurons: 50
@@ -69,57 +75,64 @@ dataloader_options:
     shuffle: !ref <shuffle>
     num_workers: 0
 
-# Augmentation
-drop_freq: !new:speechbrain.augment.time_domain.DropFreq
-    drop_freq_low: 0  # Min frequency band dropout probability
-    drop_freq_high: 1  # Max frequency band dropout probability
-    drop_freq_count_low: 1  # Min number of frequency bands to drop
-    drop_freq_count_high: 3  # Max number of frequency bands to drop
-    drop_freq_width: 0.05  # Width of frequency bands to drop
+### Config for Tokenizer
+# DAC parameters
+# model_type: [16khz, 24khz, 44khz, 44khz]
+# vocab_size: [1024, 1024, 1024, 1024]
+# model_bitrate: [8kbps, 8kbps, 8kbps, 16kbps]
+# max_num_codebooks: [12, 32, 9, 18]
+# embedding_dim: [1024, 1024, 1024, 128]
+model_type: 24khz
+vocab_size: 1024
+model_bitrate: 8kbps
+num_codebooks: 2  # NOTE: must be smaller or equal to the maximum number of codebooks for the given model type
+sample_rate: 24000
 
-drop_chunk: !new:speechbrain.augment.time_domain.DropChunk
-    drop_length_low: 1  # Min number of audio chunks to drop
-    drop_length_high: 5  # Max number of audio chunks to drop
-    drop_count_low: 1000  # Min length of audio chunks to drop
-    drop_count_high: 2000  # Max length of audio chunks to drop
+# Feature parameters
+encoder_dim: 512
+# If set to True, the encoder_dim should be set to the dim of the tokenizer. For encodec it is 128.
+init_embedding: False
+freeze_embedding: False
 
-augmentation: !new:speechbrain.augment.augmenter.Augmenter
-    parallel_augment: False
-    concat_original: False
-    repeat_augment: 1
-    shuffle_augmentations: False
-    min_augmentations: 2
-    max_augmentations: 2
-    augment_prob: 0.75
-    augmentations: [!ref <drop_freq>, !ref <drop_chunk>]
+  
+# Modules
+# DAC model (see https://github.com/descriptinc/descript-audio-codec)
+codec: !new:speechbrain.lobes.models.discrete.dac.DAC
+    model_type: !ref <model_type>
+    model_bitrate: !ref <model_bitrate>
+    load_pretrained: True
+    tag: latest
 
-# Model
-embedding_model: !apply:transformers.ViTModel.from_pretrained [google/vit-base-patch16-224]
 
-classifier: !new:speechbrain.lobes.models.ECAPA_TDNN.Classifier
-    input_size: 768
-    out_neurons: !ref <out_n_neurons>
-    lin_blocks: 1
+discrete_embedding_layer: !new:custom_model.Discrete_EmbeddingLayer
+    num_codebooks: !ref <num_codebooks>
+    vocab_size: !ref <vocab_size>
+    emb_dim: !ref <encoder_dim>
+    freeze: !ref <freeze_embedding>
+    init: !ref <init_embedding>
+
+attention_mlp: !new:custom_model.AttentionMLP
+    input_dim: !ref <encoder_dim>
+    hidden_dim: !ref <encoder_dim>
+
+
+avg_pool: !new:speechbrain.nnet.pooling.StatisticsPooling
+   return_std: False
+
+
+classifier: !new:torch.nn.Linear
+    in_features: !ref <encoder_dim>
+    out_features: !ref <out_n_neurons>
 
 epoch_counter: !new:speechbrain.utils.epoch_loop.EpochCounter
     limit: !ref <number_of_epochs>
 
-# Pre-processing
-n_fft: 1024
-spec_mag_power: 0.5
-hop_length: 11.6099
-win_length: 23.2199
-
-compute_stft: !new:speechbrain.processing.features.STFT
-    n_fft: !ref <n_fft>
-    hop_length: !ref <hop_length>
-    win_length: !ref <win_length>
-    sample_rate: !ref <sample_rate>
 
 modules:
-    compute_stft: !ref <compute_stft>
-    embedding_model: !ref <embedding_model>
     classifier: !ref <classifier>
+    attention_mlp: !ref <attention_mlp>
+    discrete_embedding_layer: !ref <discrete_embedding_layer>
+    avg_pool: !ref <avg_pool>
 
 compute_cost: !new:speechbrain.nnet.losses.LogSoftmaxWrapper
     loss_fn: !new:speechbrain.nnet.losses.AdditiveAngularMargin
@@ -146,6 +159,8 @@ error_stats: !name:speechbrain.utils.metric_stats.MetricStats
 checkpointer: !new:speechbrain.utils.checkpoints.Checkpointer
     checkpoints_dir: !ref <save_folder>
     recoverables:
-        embedding_model: !ref <embedding_model>
         classifier: !ref <classifier>
         counter: !ref <epoch_counter>
+        attention_mlp: !ref <attention_mlp>
+        codec: !ref <codec>
+        discrete_embedding_layer: !ref <discrete_embedding_layer>
