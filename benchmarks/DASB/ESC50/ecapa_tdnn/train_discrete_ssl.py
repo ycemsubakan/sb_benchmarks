@@ -79,7 +79,7 @@ class ESC50Brain(sb.core.Brain):
         # last dim will be used for AdaptativeAVG pool
         outputs = self.hparams.avg_pool(feats, lens)
         outputs = outputs.view(outputs.shape[0], -1)
-        outputs = self.modules.classifier(outputs).unsqueeze(1)
+        outputs = self.modules.classifier(outputs)
         return outputs, lens
 
     def compute_objectives(self, predictions, batch, stage):

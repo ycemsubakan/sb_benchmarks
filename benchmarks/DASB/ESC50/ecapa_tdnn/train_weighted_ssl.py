@@ -38,6 +38,7 @@ import glob
 import joblib
 
 
+
 class ESC50Brain(sb.core.Brain):
     """Class for classifier training."""
 
@@ -68,13 +69,13 @@ class ESC50Brain(sb.core.Brain):
         if (not self.hparams.use_melspectra) or self.hparams.use_log1p_mel:
             net_input = torch.log1p(net_input)
 
-        embeddings, h = self.hparams.embedding_model(net_input)
-        # att_w = self.modules.attention_mlp(embeddings)
-        # feats = torch.matmul(att_w.transpose(2, -1), embeddings).squeeze(-2)
-        # last dim will be used for AdaptativeAVG pool
-        # outputs = self.hparams.avg_pool(embeddings, lens)
-        # outputs = outputs.view(outputs.shape[0], -1)
-        outputs = self.modules.classifier(embeddings)
+        with torch.no_grad():
+            _, h = self.hparams.embedding_model(net_input)
+
+        feats = self.hparams.weighted_ssl(h)
+        outputs = self.hparams.avg_pool(feats, lens)
+        outputs = outputs.view(outputs.shape[0], -1)
+        outputs = self.modules.classifier(outputs)
         return outputs, lens
 
     def compute_objectives(self, predictions, batch, stage):
@@ -97,7 +98,9 @@ class ESC50Brain(sb.core.Brain):
 
         if stage != sb.Stage.TEST:
             if hasattr(self.hparams.lr_annealing, "on_batch_end"):
-                self.hparams.lr_annealing.on_batch_end(self.optimizer)
+                self.hparams.lr_annealing.on_batch_end(self.model_optimizer)
+            if hasattr(self.hparams.lr_annealing_weights, "on_batch_end"):
+                self.hparams.lr_annealing_weights.on_batch_end(self.weights_optimizer)
 
         # Append this batch of losses to the loss metric
         self.loss_metric.append(
@@ -180,6 +183,26 @@ class ESC50Brain(sb.core.Brain):
         if stage != sb.Stage.TRAIN:
             self.error_metrics = self.hparams.error_stats()
 
+    def init_optimizers(self):
+        "Initializes the weights optimizer and model optimizer"
+        self.weights_optimizer = self.hparams.weights_opt_class(
+            [*self.hparams.weighted_ssl.parameters()]
+        )
+        self.model_optimizer = self.hparams.model_opt_class(
+            self.modules.parameters()
+        )
+        self.optimizers_dict = {
+            "model_optimizer": self.model_optimizer,
+            "weights_optimizer": self.weights_optimizer,
+        }
+        # Initializing the weights
+        if self.checkpointer is not None:
+            self.checkpointer.add_recoverable("modelopt", self.model_optimizer)
+            self.checkpointer.add_recoverable(
+                "weights_opt", self.weights_optimizer
+            )
+
+    
     def on_stage_end(self, stage, stage_loss, epoch=None):
         """Gets called at the end of an epoch.
 
@@ -217,8 +240,21 @@ class ESC50Brain(sb.core.Brain):
 
         # Perform end-of-iteration things, like annealing, logging, etc.
         if stage == sb.Stage.VALID:
+            # old_lr, new_lr = self.hparams.lr_annealing(epoch)
+            # sb.nnet.schedulers.update_learning_rate(self.optimizer, new_lr)
+
             old_lr, new_lr = self.hparams.lr_annealing(epoch)
-            sb.nnet.schedulers.update_learning_rate(self.optimizer, new_lr)
+            sb.nnet.schedulers.update_learning_rate(
+                self.model_optimizer, new_lr
+            )
+
+            (
+                old_lr_encoder,
+                new_lr_encoder,
+            ) = self.hparams.lr_annealing_weights(epoch)
+            sb.nnet.schedulers.update_learning_rate(
+                self.weights_optimizer, new_lr_encoder
+            )
 
             # Tensorboard logging
             if self.hparams.use_tensorboard:
@@ -240,7 +276,7 @@ class ESC50Brain(sb.core.Brain):
 
             # The train_logger writes a summary to stdout and to the log file
             self.hparams.train_logger.log_stats(
-                stats_meta={"epoch": epoch, "lr": old_lr},
+                stats_meta={"epoch": epoch, "lr": old_lr, "att_lr": old_lr_encoder},
                 train_stats=self.train_stats,
                 valid_stats=valid_stats,
             )
@@ -349,7 +385,8 @@ def dataio_prep(hparams):
     return datasets, label_encoder
 
 
-class DiscreteSSL_ESC50(nn.Module):
+
+class WeightedSSL_ESC50(nn.Module):
     """This lobe enables the integration of HuggingFace and SpeechBrain
     pretrained Discrete SSL models.
 
@@ -403,135 +440,23 @@ class DiscreteSSL_ESC50(nn.Module):
 
     def __init__(
         self,
-        ssl_model,
-        kmeans_path,
-        num_clusters=100,
-        layers_num=None,
+        attention_mlp,
+        dims=[2048,1024,512,256],
         Ktarget=512
     ):
 
         super().__init__()
-        self.ssl_model = ssl_model
-        # model_name = ssl_model.__class__.__name__.lower()
-        self.check_if_input_is_compatible(layers_num, num_clusters)
 
-        self.kmeans_models, self.ssl_layer_ids, self.num_clusters = (
-            self.load_kmeans(
-                kmeans_path=kmeans_path,
-                num_clusters=num_clusters,
-                layers_num=layers_num,
-            )
-        )
-
-        self.vocabularies = []
+        self.attention_mlp = attention_mlp
         lin_tfs = []
-        for model in self.kmeans_models:
-            self.vocabularies.append(model.cluster_centers_)
-            lin_tfs.append(nn.Linear(model.cluster_centers_.shape[1], Ktarget))
+        for dim in dims:
+            lin_tfs.append(nn.Linear(dim, Ktarget))
         self.lin_tfs = nn.ModuleList(lin_tfs)
-        # self.tokenizer = DiscreteSSLTokenizer(self.num_clusters)
-        
 
-
-
-    def check_if_input_is_compatible(self, layers_num, num_clusters):
-        """check if layer_number and num_clusters is consisntent with each other.
-        Arguments
-        ---------
-        num_clusters:  int or List[int]
-            determine the number of clusters of the targeted kmeans models to be downloaded. It could be varying for each layer.
-        layers_num: : List[int] (Optional)
-            If num_clusters is a list, the layers_num should be provided to determine the cluster number for each layer.
-        """
-
-        if layers_num:
-            if isinstance(num_clusters, int):
-                num_clusters = [num_clusters for i in layers_num]
-            assert len(num_clusters) == len(
-                layers_num
-            ), "length of num_clusters and layers_num should be the same!!!"
-        if layers_num is None:
-            assert isinstance(
-                num_clusters, int
-            ), "num_clusters is expected to be int since the layers_num is not provided."
-        self.num_clusters = num_clusters
-
-    def load_kmeans(
-        self,
-        kmeans_path,
-        num_clusters,
-        cache_dir='.',
-        layers_num=None,
-    ):
-        """Load a Pretrained kmeans model from HF.
-
-        Arguments
-        ---------
-        repo_id : str
-           The hugingface repo id that contains the model.
-        kmeans_dataset : str
-            Name of the dataset that Kmeans model are trained with in HF repo that need to be downloaded.
-        cache_dir: str
-            Path (dir) of the downloaded model.
-        num_clusters:  int or List[int]
-            determine the number of clusters of the targeted kmeans models to be downloaded. It could be varying for each layer.
-        layers_num: : List[int] (Optional)
-            If num_clusters is a list, the layers_num should be provided to determine the cluster number for each layer.
-        Returns:
-        ---------
-        kmeans_model : MiniBatchKMeans:
-            pretrained Kmeans  model loaded from the HF.
-        layer_ids : List[int] :
-            supported layer nums for kmeans (extracted from the name of kmeans model.)
-        """
-
-        kmeans_models = []
-        layer_ids = []
-        file_patterns = []
-        if layers_num:
-            for layer in layers_num:
-                file_patterns.append(
-                    f"*-{num_clusters}_layer_{layer}.pt"
-                )
-        else:
-            file_patterns.append(
-                f"*-{num_clusters[i]}.pt"
-            )
-        # kmeans_dir = snapshot_download(
-        #     repo_id=repo_id, allow_patterns=file_patterns, cache_dir=cache_dir
-        # )
-
-        files = []
-        for ext in file_patterns:
-            for file in glob.glob(os.path.join(kmeans_path, ext)):
-                if file not in files:
-                    files.append(file)
-                    layer_ids.append(
-                        int(
-                            file.split("/")[-1].split('.')[0][-1]
-                        )
-                    )
-                    kmeans_models.append(joblib.load(file))
-
-        assert (
-            len(layer_ids) > 0
-        ), f"There is no trained k-means model available for *_k{num_clusters[i]}_L*"
-
-        if isinstance(num_clusters, int):
-            num_clusters = [num_clusters for i in layer_ids]
-
-        layer_ids, kmeans_models, num_clusters = zip(
-            *sorted(zip(layer_ids, kmeans_models, num_clusters))
-        )
-        return kmeans_models, layer_ids, num_clusters
-
+    
     def forward(
         self,
         h,
-        wav_lens=None,
-        SSL_layers=None,
-        deduplicates=None,
-        bpe_tokenizers=None,
     ):
         """Takes an input waveform and return its corresponding wav2vec encoding.
 
@@ -557,59 +482,23 @@ class DiscreteSSL_ESC50(nn.Module):
             A (Batch x Seq x num_SSL_layers) tensor of audio tokens after applying deduplication and subwording if necessary.
         """
 
-        if SSL_layers is None:
-            SSL_layers = self.ssl_layer_ids
-        # if deduplicates is None:
-        #     deduplicates = [False] * len(SSL_layers)
-        # if bpe_tokenizers is None:
-        #     bpe_tokenizers = [None] * len(SSL_layers)
-
-        # assert (
-        #     len(deduplicates) == len(SSL_layers) == len(bpe_tokenizers)
-        # ), "length of SSL_layers,deduplicates,bpe_tokenizers should be the same!!!"
         embeddings = []
-        token_ids = []
+        for layer_num, _ in enumerate(h):
+            h_reshaped = h[layer_num].permute(0, 2, 3, 1)
 
-        for layer in SSL_layers:
-            if layer not in self.ssl_layer_ids:
-                raise ValueError(
-                    f"Layer {layer} is not among trained layers for k-means. Supported layers are: {self.ssl_layer_ids}."
-                )
-        
-        lens = []
-        with torch.no_grad():
-            for layer_num, model, vocabulary in zip(self.ssl_layer_ids, self.kmeans_models, self.vocabularies):
-                if layer_num not in SSL_layers:
-                    continue
-                h_reshaped = h[layer_num].permute(0, 2, 3, 1)
-
-                tokens = model.predict(h_reshaped.reshape(-1, h_reshaped.shape[-1]).cpu())
-                embs = vocabulary[tokens]
-                embs_tensor = torch.tensor(embs.reshape(h_reshaped.shape[0], -1, embs.shape[-1]),
+            embs_tensor = torch.tensor(h_reshaped.reshape(h_reshaped.shape[0], -1, h_reshaped.shape[-1]),
                                            dtype=torch.float,
                                            device=h_reshaped.device,
                                            )
-                embeddings.append(self.lin_tfs[layer_num](embs_tensor))
+            embeddings.append(self.lin_tfs[layer_num](embs_tensor))
 
-                tokens_tensor = torch.tensor(tokens.reshape(h_reshaped.shape[0], -1),
-                                             dtype=torch.long,
-                                             device=h_reshaped.device,
-                                            )
-                token_ids.append(tokens_tensor)
-                lens.append(tokens_tensor.shape[-1])
-
-            max_len = max(lens)
-            for layer_num in self.ssl_layer_ids:
-                token_ids[layer_num] = F.pad(token_ids[layer_num], pad=(0, max_len - token_ids[layer_num].shape[-1]))
-                embeddings[layer_num] = F.pad(embeddings[layer_num], pad=(0, 0, 0, max_len - embeddings[layer_num].shape[1]))
-
-        tokens = torch.stack(token_ids, 2)
-        discrete_embeddings = torch.stack(embeddings, 2)
-
-        #processed_tokens = self.tokenizer.encode(
-        #    org_tokens, SSL_layers, deduplicates, bpe_tokenizers
-        #)
-        return tokens, discrete_embeddings
+        max_len = max([x.shape[1] for x in embeddings])
+        for layer_num, _ in enumerate(h):
+            embeddings[layer_num] = F.pad(embeddings[layer_num], pad=(0, 0, 0, max_len - embeddings[layer_num].shape[1]))
+        embeddings = torch.stack(embeddings, 2)
+        att_w = self.attention_mlp(embeddings)
+        feats = torch.matmul(att_w.transpose(2, -1), embeddings).squeeze(-2)
+        return feats
 
 if __name__ == "__main__":
     # This flag enables the built-in cuDNN auto-tuner
@@ -674,9 +563,11 @@ if __name__ == "__main__":
     class_labels = list(label_encoder.ind2lab.values())
     print("Class Labels:", class_labels)
 
+   
+
     ESC50_brain = ESC50Brain(
         modules=hparams["modules"],
-        opt_class=hparams["opt_class"],
+        # opt_class=hparams["opt_class"],
         hparams=hparams,
         run_opts=run_opts,
         checkpointer=hparams["checkpointer"],
@@ -685,7 +576,7 @@ if __name__ == "__main__":
     # Load pretrained encoder if it exists in the yaml file
     if not hasattr(ESC50_brain.modules, "embedding_model"):
         ESC50_brain.hparams.embedding_model.to(ESC50_brain.device)
-
+    ESC50_brain.hparams.weighted_ssl.to(ESC50_brain.device)
     if "pretrained_encoder" in hparams and hparams["use_pretrained"]:
         run_on_main(hparams["pretrained_encoder"].collect_files)
         hparams["pretrained_encoder"].load_collected()
