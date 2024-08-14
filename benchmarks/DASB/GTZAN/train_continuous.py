@@ -641,7 +641,7 @@ if __name__ == "__main__":
 
     import glob
     # get the dataloader
-    paths = glob.glob('/data2/GTZAN/Data/genres_original/**/*.wav', recursive=True)
+    paths = glob.glob(os.path.join(hparams['data_folder'], 'Data/genres_original/**/*.wav'), recursive=True)
     all_genres = list(set([path.split('/')[-2] for path in paths]))
     tr_pairs = [(path, all_genres.index(path.split('/')[-2])) for path in paths if int(path.split('.')[-2]) < 80]
     valid_pairs = [(path, all_genres.index(path.split('/')[-2])) for path in paths if 80 <= int(path.split('.')[-2]) < 90]
