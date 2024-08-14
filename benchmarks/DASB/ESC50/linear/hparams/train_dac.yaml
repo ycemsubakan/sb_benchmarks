@@ -89,7 +89,7 @@ num_codebooks: 2  # NOTE: must be smaller or equal to the maximum number of code
 sample_rate: 24000
 
 # Feature parameters
-encoder_dim: 512
+encoder_dim: 2048
 # If set to True, the encoder_dim should be set to the dim of the tokenizer. For encodec it is 128.
 init_embedding: False
 freeze_embedding: False
