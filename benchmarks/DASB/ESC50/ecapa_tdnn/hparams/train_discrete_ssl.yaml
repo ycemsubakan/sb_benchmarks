@@ -90,11 +90,11 @@ compute_features: !new:speechbrain.lobes.features.Fbank
 
 
   
-codec: !new:train.DiscreteSSL_ESC50
+codec: !new:train_discrete_ssl.DiscreteSSL_ESC50
    ssl_model: cnn_14
-   kmeans_path: kmeans-cluster-100
+   kmeans_path: benchmarks/DASB/ESC50/kmeans-cluster-100
    num_clusters: 100  # this is actually 128 -- to fix in cleaned-up repo 
-   layers_num: [0, 1]
+   layers_num: [0, 1,2,3]
 
 
 discrete_embedding_layer: !new:custom_model.Discrete_EmbeddingLayer
