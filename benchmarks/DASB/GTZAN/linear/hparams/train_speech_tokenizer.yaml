@@ -14,7 +14,7 @@ __set_seed: !!python/object/apply:torch.manual_seed [!ref <seed>]
 data_folder: !PLACEHOLDER    # e.g., /localscratch/genres
 audio_data_folder: !ref <data_folder>/audio
 
-experiment_name: !ref mert-gtzan-continuous
+experiment_name: !ref mert-gtzan-speechtokenizer
 output_folder: !ref ./results/<experiment_name>/<seed>
 save_folder: !ref <output_folder>/save
 train_log: !ref <output_folder>/train_log.txt
@@ -59,39 +59,24 @@ dataloader_options:
     shuffle: !ref <shuffle>
     num_workers: 0
 
-## Config for Tokenizer
-# EnCodec parameters
-# sample_rate: [24000, 24000, 24000, 24000]
-# vocab_size: [1024, 1024, 1024, 1024]
-# bandwidth: [1.5, 3.0, 6.0, 12.0, 24.0]
-# num_codebooks: [2, 4, 8, 16, 32]
+### Config for Tokenizer
 vocab_size: 1024
-bandwidth: 1.5
 num_codebooks: 2
-sample_rate: 24000
+sample_rate: 16000
+
 # Feature parameters
 encoder_dim: 1024
-# If set to True, the encoder_dim should be set to the dim of the tokenizer. For encodec it is 128.
-init_embedding: False
-freeze_embedding: False
 
 # Modules
 # EnCodec model (see https://huggingface.co/docs/transformers/v4.31.0/en/model_doc/encodec)
-codec: !new:speechbrain.lobes.models.huggingface_transformers.encodec.Encodec
-    source: facebook/encodec_24khz  # Only the 24kHz version supports mono audio
+codec: !new:speechbrain.lobes.models.discrete.speechtokenizer_interface.SpeechTokenizer_interface
+    source: fnlp/SpeechTokenizer  # Only the 24kHz version supports mono audio
     save_path: !ref <save_folder>
-    sample_rate: !ref <sample_rate>
-    bandwidth: !ref <bandwidth>
-    flat_embeddings: False
-    freeze: True
-    renorm_embeddings: False
 
 discrete_embedding_layer: !new:custom_model.Discrete_EmbeddingLayer
     num_codebooks: !ref <num_codebooks>
     vocab_size: !ref <vocab_size>
     emb_dim: !ref <encoder_dim>
-    freeze: !ref <freeze_embedding>
-    init: !ref <init_embedding>
 
 attention_mlp: !new:custom_model.AttentionMLP
     input_dim: !ref <encoder_dim>
