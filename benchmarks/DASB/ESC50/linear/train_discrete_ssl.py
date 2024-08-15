@@ -520,7 +520,7 @@ class DiscreteSSL_ESC50(nn.Module):
 
         assert (
             len(layer_ids) > 0
-        ), f"There is no trained k-means model available for *_k{num_clusters[i]}_L*"
+        ), f"There is no trained k-means model available for *_k{num_clusters[layer_ids]}_L*"
 
         if isinstance(num_clusters, int):
             num_clusters = [num_clusters for i in layer_ids]

@@ -46,7 +46,7 @@ train_fold_nums: [1, 2, 3]
 valid_fold_nums: [4]
 test_fold_nums: [5]
 skip_manifest_creation: False
-layers_num: [0,1,2,3]
+layers_num: [0, 1, 2, 3]
 num_codebooks: 4
 num_clusters: 128
 kmeans_path: benchmarks/DASB/ESC50/kmeans-cluster-100
