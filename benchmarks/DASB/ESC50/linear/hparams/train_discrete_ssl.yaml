@@ -49,6 +49,7 @@ skip_manifest_creation: False
 layers_num: [0,1,2,3]
 num_codebooks: 4
 num_clusters: 128
+kmeans_path: benchmarks/DASB/ESC50/kmeans-cluster-100
 ckpt_interval_minutes: 15 # save checkpoint every N min
 
 # Training parameters
@@ -94,7 +95,7 @@ compute_features: !new:speechbrain.lobes.features.Fbank
   
 codec: !new:train_discrete_ssl.DiscreteSSL_ESC50
    ssl_model: cnn_14
-   kmeans_path: benchmarks/DASB/ESC50/kmeans-cluster-100
+   kmeans_path: !ref <kmeans_path>
    num_clusters: !ref <num_clusters>  # this is actually 128 -- to fix in cleaned-up repo 
    layers_num: !ref <layers_num>
 
