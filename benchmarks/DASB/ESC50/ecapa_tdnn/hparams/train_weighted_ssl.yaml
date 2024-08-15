@@ -13,10 +13,10 @@ seed: 1234
 __set_seed: !!python/object/apply:torch.manual_seed [!ref <seed>]
 
 # Set up folders for reading from and writing to
-data_folder: data  # e.g., /localscratch/ESC-50-master
+data_folder: !PLACEHOLDER  # e.g., /localscratch/ESC-50-master
 audio_data_folder: !ref <data_folder>/audio
 
-experiment_name: !ref cnn14-esc50-low
+experiment_name: !ref cnn14-esc50
 output_folder: !ref ./results/<experiment_name>/<seed>
 save_folder: !ref <output_folder>/save
 train_log: !ref <output_folder>/train_log.txt
@@ -56,6 +56,7 @@ lr: 0.0002
 base_lr: 0.0002
 max_lr: !ref <lr>
 step_size: 65000
+lr_weights: 0.01
 
 
 # Feature parameters
@@ -63,7 +64,7 @@ n_mels: 80
 left_frames: 0
 right_frames: 0
 deltas: False
-
+encoder_dim: 2048
 use_melspectra: True
 use_log1p_mel: True
 
@@ -89,35 +90,29 @@ compute_features: !new:speechbrain.lobes.features.Fbank
     hop_length: 10
 
 
-  
-codec: !new:train.DiscreteSSL_ESC50
-   ssl_model: cnn_14
-   kmeans_path: kmeans-cluster-100
-   num_clusters: 100  # this is actually 128 -- to fix in cleaned-up repo 
-   layers_num: [0, 1]
-
-
-discrete_embedding_layer: !new:custom_model.Discrete_EmbeddingLayer
-   num_codebooks: 4 
-   vocab_size: 129  # num_clusters + 1
-   emb_dim: 512 
-
 
 attention_mlp: !new:custom_model.AttentionMLP
-   input_dim: 512
-   hidden_dim: 512
+   input_dim: 2048
+   hidden_dim: 2048
 
-avg_pool: !new:speechbrain.nnet.pooling.StatisticsPooling
-   return_std: False
 
 embedding_model: !new:speechbrain.lobes.models.Cnn14.Cnn14
     mel_bins: !ref <n_mels>
-    emb_dim: 2048
+    emb_dim: !ref <encoder_dim>
     return_reps: True
 
-classifier: !new:torch.nn.Linear
-    in_features: 512
-    out_features: !ref <out_n_neurons>
+avg_pool: !new:speechbrain.lobes.models.ECAPA_TDNN.ECAPA_TDNN
+    input_size: !ref <encoder_dim>
+    channels: [1024, 1024, 1024, 1024, 3072]
+    kernel_sizes: [5, 3, 3, 3, 1]
+    dilations: [1, 2, 3, 4, 1]
+    attention_channels: 64
+    lin_neurons: 192
+
+classifier: !new:speechbrain.lobes.models.ECAPA_TDNN.Classifier
+    input_size: 192
+    out_neurons: !ref <out_n_neurons>
+
 
 epoch_counter: !new:speechbrain.utils.epoch_loop.EpochCounter
     limit: !ref <number_of_epochs>
@@ -139,14 +134,16 @@ compute_fbank: !new:speechbrain.processing.features.Filterbank
     sample_rate: !ref <sample_rate>
     log_mel: False
 
+weighted_ssl: !new:train_weighted_ssl.WeightedSSL_ESC50
+    Ktarget: 2048
+    attention_mlp: !ref <attention_mlp>
+
 modules:
     compute_stft: !ref <compute_stft>
     compute_fbank: !ref <compute_fbank>
     compute_features: !ref <compute_features>
     classifier: !ref <classifier>
     attention_mlp: !ref <attention_mlp>
-    codec: !ref <codec>
-    discrete_embedding_layer: !ref <discrete_embedding_layer>
     avg_pool: !ref <avg_pool>
 
 compute_cost: !new:speechbrain.nnet.losses.LogSoftmaxWrapper
@@ -154,7 +151,10 @@ compute_cost: !new:speechbrain.nnet.losses.LogSoftmaxWrapper
         margin: 0.2
         scale: 30
 
-opt_class: !name:torch.optim.Adam
+weights_opt_class: !name:torch.optim.Adam
+    lr: !ref <lr_weights>
+
+model_opt_class: !name:torch.optim.Adam
     lr: !ref <lr>
     weight_decay: 0.000002
 
@@ -163,6 +163,10 @@ lr_annealing: !new:speechbrain.nnet.schedulers.CyclicLRScheduler
     max_lr: !ref <max_lr>
     step_size: !ref <step_size>
 
+lr_annealing_weights: !new:speechbrain.nnet.schedulers.NewBobScheduler
+    initial_value: !ref <lr_weights>
+    improvement_threshold: 0.0025
+    annealing_factor: 0.9
 # Logging + checkpoints
 train_logger: !new:speechbrain.utils.train_logger.FileTrainLogger
     save_file: !ref <train_log>
@@ -177,8 +181,6 @@ checkpointer: !new:speechbrain.utils.checkpoints.Checkpointer
         classifier: !ref <classifier>
         counter: !ref <epoch_counter>
         attention_mlp: !ref <attention_mlp>
-        codec: !ref <codec>
-        discrete_embedding_layer: !ref <discrete_embedding_layer>
 
 use_pretrained: True
 # If you do not want to use the pretrained encoder

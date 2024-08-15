@@ -13,7 +13,7 @@ seed: 1234
 __set_seed: !!python/object/apply:torch.manual_seed [!ref <seed>]
 
 # Set up folders for reading from and writing to
-data_folder: data  # e.g., /localscratch/ESC-50-master
+data_folder: !PLACEHOLDER  # e.g., /localscratch/ESC-50-master
 audio_data_folder: !ref <data_folder>/audio
 
 experiment_name: !ref dac-low
@@ -89,7 +89,7 @@ num_codebooks: 2  # NOTE: must be smaller or equal to the maximum number of code
 sample_rate: 24000
 
 # Feature parameters
-encoder_dim: 512
+encoder_dim: 2048
 # If set to True, the encoder_dim should be set to the dim of the tokenizer. For encodec it is 128.
 init_embedding: False
 freeze_embedding: False
@@ -116,13 +116,18 @@ attention_mlp: !new:custom_model.AttentionMLP
     hidden_dim: !ref <encoder_dim>
 
 
-avg_pool: !new:speechbrain.nnet.pooling.StatisticsPooling
-   return_std: False
+avg_pool: !new:speechbrain.lobes.models.ECAPA_TDNN.ECAPA_TDNN
+    input_size: !ref <encoder_dim>
+    channels: [1024, 1024, 1024, 1024, 3072]
+    kernel_sizes: [5, 3, 3, 3, 1]
+    dilations: [1, 2, 3, 4, 1]
+    attention_channels: 64
+    lin_neurons: 192
 
+classifier: !new:speechbrain.lobes.models.ECAPA_TDNN.Classifier
+    input_size: 192
+    out_neurons: !ref <out_n_neurons>
 
-classifier: !new:torch.nn.Linear
-    in_features: !ref <encoder_dim>
-    out_features: !ref <out_n_neurons>
 
 epoch_counter: !new:speechbrain.utils.epoch_loop.EpochCounter
     limit: !ref <number_of_epochs>

@@ -38,6 +38,7 @@ import glob
 import joblib
 
 
+
 class ESC50Brain(sb.core.Brain):
     """Class for classifier training."""
 
@@ -45,7 +46,7 @@ class ESC50Brain(sb.core.Brain):
         """Computation pipeline based on an encoder + sound classifier."""
         batch = batch.to(self.device)
         wavs, lens = batch.sig
-        
+
         # Augment if specified
         if hasattr(self.hparams, "augmentation") and stage == sb.Stage.TRAIN:
             wavs, lens = self.hparams.augmentation(wavs, lens)
@@ -54,16 +55,24 @@ class ESC50Brain(sb.core.Brain):
         if hasattr(self.hparams, "add_wham_noise"):
             if self.hparams.add_wham_noise:
                 wavs = combine_batches(wavs, iter(self.hparams.wham_dataset))
-        
+
+        X_stft = self.modules.compute_stft(wavs)
+        net_input = sb.processing.features.spectral_magnitude(
+            X_stft, power=self.hparams.spec_mag_power
+        )
+        if (
+            hasattr(self.hparams, "use_melspectra")
+            and self.hparams.use_melspectra
+        ):
+            net_input = self.modules.compute_fbank(net_input)
+
+        if (not self.hparams.use_melspectra) or self.hparams.use_log1p_mel:
+            net_input = torch.log1p(net_input)
+
         with torch.no_grad():
-            self.hparams.codec.to(self.device).eval()
-            tokens, _ = self.hparams.codec(
-                wavs.unsqueeze(1), n_quantizers=self.hparams.num_codebooks
-            )
-        embeddings = self.modules.discrete_embedding_layer(tokens.movedim(-2, -1))
-        att_w = self.modules.attention_mlp(embeddings)
-        feats = torch.matmul(att_w.transpose(2, -1), embeddings).squeeze(-2)
-        # last dim will be used for AdaptativeAVG pool
+            _, h = self.hparams.embedding_model(net_input)
+
+        feats = self.hparams.weighted_ssl(h)
         outputs = self.hparams.avg_pool(feats, lens)
         outputs = outputs.view(outputs.shape[0], -1)
         outputs = self.modules.classifier(outputs)
@@ -89,7 +98,9 @@ class ESC50Brain(sb.core.Brain):
 
         if stage != sb.Stage.TEST:
             if hasattr(self.hparams.lr_annealing, "on_batch_end"):
-                self.hparams.lr_annealing.on_batch_end(self.optimizer)
+                self.hparams.lr_annealing.on_batch_end(self.model_optimizer)
+            if hasattr(self.hparams.lr_annealing_weights, "on_batch_end"):
+                self.hparams.lr_annealing_weights.on_batch_end(self.weights_optimizer)
 
         # Append this batch of losses to the loss metric
         self.loss_metric.append(
@@ -172,6 +183,26 @@ class ESC50Brain(sb.core.Brain):
         if stage != sb.Stage.TRAIN:
             self.error_metrics = self.hparams.error_stats()
 
+    def init_optimizers(self):
+        "Initializes the weights optimizer and model optimizer"
+        self.weights_optimizer = self.hparams.weights_opt_class(
+            [*self.hparams.weighted_ssl.parameters()]
+        )
+        self.model_optimizer = self.hparams.model_opt_class(
+            self.modules.parameters()
+        )
+        self.optimizers_dict = {
+            "model_optimizer": self.model_optimizer,
+            "weights_optimizer": self.weights_optimizer,
+        }
+        # Initializing the weights
+        if self.checkpointer is not None:
+            self.checkpointer.add_recoverable("modelopt", self.model_optimizer)
+            self.checkpointer.add_recoverable(
+                "weights_opt", self.weights_optimizer
+            )
+
+    
     def on_stage_end(self, stage, stage_loss, epoch=None):
         """Gets called at the end of an epoch.
 
@@ -209,8 +240,21 @@ class ESC50Brain(sb.core.Brain):
 
         # Perform end-of-iteration things, like annealing, logging, etc.
         if stage == sb.Stage.VALID:
+            # old_lr, new_lr = self.hparams.lr_annealing(epoch)
+            # sb.nnet.schedulers.update_learning_rate(self.optimizer, new_lr)
+
             old_lr, new_lr = self.hparams.lr_annealing(epoch)
-            sb.nnet.schedulers.update_learning_rate(self.optimizer, new_lr)
+            sb.nnet.schedulers.update_learning_rate(
+                self.model_optimizer, new_lr
+            )
+
+            (
+                old_lr_encoder,
+                new_lr_encoder,
+            ) = self.hparams.lr_annealing_weights(epoch)
+            sb.nnet.schedulers.update_learning_rate(
+                self.weights_optimizer, new_lr_encoder
+            )
 
             # Tensorboard logging
             if self.hparams.use_tensorboard:
@@ -232,7 +276,7 @@ class ESC50Brain(sb.core.Brain):
 
             # The train_logger writes a summary to stdout and to the log file
             self.hparams.train_logger.log_stats(
-                stats_meta={"epoch": epoch, "lr": old_lr},
+                stats_meta={"epoch": epoch, "lr": old_lr, "att_lr": old_lr_encoder},
                 train_stats=self.train_stats,
                 valid_stats=valid_stats,
             )
@@ -301,8 +345,6 @@ def dataio_prep(hparams):
 
         sig = sig.float()
         sig = sig / sig.max()
-        #         resampled = resampled.unsqueeze(0)
-        
         return sig
 
     # 3. Define label pipeline:
@@ -341,6 +383,122 @@ def dataio_prep(hparams):
     )
 
     return datasets, label_encoder
+
+
+
+class WeightedSSL_ESC50(nn.Module):
+    """This lobe enables the integration of HuggingFace and SpeechBrain
+    pretrained Discrete SSL models.
+
+    Transformer from HuggingFace needs to be installed:
+    https://huggingface.co/transformers/installation.html
+
+    The model can be used as a fixed Discrete feature extractor or can be finetuned. It
+    will download automatically the model from HuggingFace or use a local path.
+
+    Arguments
+    ---------
+    source : str
+        HuggingFace hub name: e.g "facebook/hubert-base-ls960"
+    save_path : str
+        Path (dir) of the downloaded model.
+    ssl_model : str
+        SSL model to extract semantic tokens from its layers' output. Note that output_all_hiddens should be set to True to enable multi-layer discretenation.
+    kmeans_repo_id : str
+        Huggingface repository that contains the pre-trained k-means models.
+    kmeans_dataset : str
+        Name of the dataset that Kmeans model on HF repo is trained with.
+    num_clusters:  int or List[int] (default: 1000)
+            determine the number of clusters of the targeted kmeans models to be downloaded. It could be varying for each layer.
+    layers_num: : List[int] (Optional)
+            detremine layers to be download from HF repo. If it is not provided, all layers with num_clusters(int) is loaded from HF repo. If num_clusters is a list, the layers_num should be provided to determine the cluster number for each layer.
+
+
+    Example
+    -------
+    >>> import torch
+    >>> from speechbrain.lobes.models.huggingface_transformers.hubert import (HuBERT)
+    >>> inputs = torch.rand([3, 2000])
+    >>> model_hub = "facebook/hubert-large-ll60k"
+    >>> save_path = "savedir"
+    >>> ssl_layer_num = [7,23]
+    >>> deduplicate =[False, True]
+    >>> bpe_tokenizers=[None, None]
+    >>> kmeans_repo_id = "speechbrain/SSL_Quantization"
+    >>> kmeans_dataset = "LJSpeech"
+    >>> num_clusters = 1000
+    >>> ssl_model = HuBERT(model_hub, save_path,output_all_hiddens=True)
+    >>> model = DiscreteSSL(save_path, ssl_model, kmeans_repo_id=kmeans_repo_id, kmeans_dataset=kmeans_dataset,num_clusters=num_clusters)
+    >>> tokens, embs ,pr_tokens= model(inputs,SSL_layers=ssl_layer_num, deduplicates=deduplicate, bpe_tokenizers=bpe_tokenizers)
+    >>> print(tokens.shape)
+    torch.Size([3, 6, 2])
+    >>> print(embs.shape)
+    torch.Size([3, 6, 2, 1024])
+    >>> print(pr_tokens.shape)
+    torch.Size([3, 6, 2])
+    """
+
+    def __init__(
+        self,
+        attention_mlp,
+        dims=[2048,1024,512,256],
+        Ktarget=512
+    ):
+
+        super().__init__()
+
+        self.attention_mlp = attention_mlp
+        lin_tfs = []
+        for dim in dims:
+            lin_tfs.append(nn.Linear(dim, Ktarget))
+        self.lin_tfs = nn.ModuleList(lin_tfs)
+
+    
+    def forward(
+        self,
+        h,
+    ):
+        """Takes an input waveform and return its corresponding wav2vec encoding.
+
+        Arguments
+        ---------
+        wav : torch.Tensor (signal)
+            A batch of audio signals to transform to features.
+        wav_len : tensor
+            The relative length of the wav given in SpeechBrain format.
+        SSL_layers: List[int]:
+            determine which layers of SSL should be used to extract information.
+        deduplicates: List[boolean]:
+            determine to apply deduplication(remove duplicate subsequent tokens) on the tokens extracted for the corresponding layer.
+        bpe_tokenizers: List[int]:
+            determine to apply subwording on the tokens extracted for the corresponding layer if the sentencePiece tokenizer is trained for that layer.
+        Returns:
+        ---------
+        tokens : torch.Tensor
+            A (Batch x Seq x num_SSL_layers) tensor of audio tokens
+        emb : torch.Tensor
+            A (Batch x Seq x num_SSL_layers x embedding_dim ) cluster_centers embeddings for each tokens
+        processed_tokens : torch.Tensor
+            A (Batch x Seq x num_SSL_layers) tensor of audio tokens after applying deduplication and subwording if necessary.
+        """
+
+        embeddings = []
+        for layer_num, _ in enumerate(h):
+            h_reshaped = h[layer_num].permute(0, 2, 3, 1)
+
+            embs_tensor = torch.tensor(h_reshaped.reshape(h_reshaped.shape[0], -1, h_reshaped.shape[-1]),
+                                           dtype=torch.float,
+                                           device=h_reshaped.device,
+                                           )
+            embeddings.append(self.lin_tfs[layer_num](embs_tensor))
+
+        max_len = max([x.shape[1] for x in embeddings])
+        for layer_num, _ in enumerate(h):
+            embeddings[layer_num] = F.pad(embeddings[layer_num], pad=(0, 0, 0, max_len - embeddings[layer_num].shape[1]))
+        embeddings = torch.stack(embeddings, 2)
+        att_w = self.attention_mlp(embeddings)
+        feats = torch.matmul(att_w.transpose(2, -1), embeddings).squeeze(-2)
+        return feats
 
 if __name__ == "__main__":
     # This flag enables the built-in cuDNN auto-tuner
@@ -405,13 +563,23 @@ if __name__ == "__main__":
     class_labels = list(label_encoder.ind2lab.values())
     print("Class Labels:", class_labels)
 
+   
+
     ESC50_brain = ESC50Brain(
         modules=hparams["modules"],
-        opt_class=hparams["opt_class"],
+        # opt_class=hparams["opt_class"],
         hparams=hparams,
         run_opts=run_opts,
         checkpointer=hparams["checkpointer"],
     )
+
+    # Load pretrained encoder if it exists in the yaml file
+    if not hasattr(ESC50_brain.modules, "embedding_model"):
+        ESC50_brain.hparams.embedding_model.to(ESC50_brain.device)
+    ESC50_brain.hparams.weighted_ssl.to(ESC50_brain.device)
+    if "pretrained_encoder" in hparams and hparams["use_pretrained"]:
+        run_on_main(hparams["pretrained_encoder"].collect_files)
+        hparams["pretrained_encoder"].load_collected()
 
     if not hparams["test_only"]:
         ESC50_brain.fit(
