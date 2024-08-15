@@ -115,6 +115,7 @@ codec: !new:discrete_esc50.DiscreteSSL_ESC50
    kmeans_repo_id: !ref <kmeans_repo_id>
    num_clusters: !ref <num_clusters>
    Ktarget: !ref <encoder_dim> 
+   layers_num: !ref <ssl_layer_num>
 
 
 discrete_embedding_layer: !new:custom_model.Discrete_EmbeddingLayer
