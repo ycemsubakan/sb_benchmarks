@@ -1,0 +1,149 @@
+# #################################
+# Basic training parameters for music genra classification using the gtzan dataset.
+# This recipe uses the avg pooling + linear backbone for classification.
+#
+# Authors:
+#  * Pooneh Mousavi 2024
+# #################################
+
+# Seed needs to be set at top of yaml, before objects with parameters are made
+seed: 1234
+__set_seed: !!python/object/apply:torch.manual_seed [!ref <seed>]
+
+# Set up folders for reading from and writing to
+data_folder: !PLACEHOLDER    # e.g., /localscratch/genres
+audio_data_folder: !ref <data_folder>/audio
+
+experiment_name: !ref mert-gtzan-speechtokenizer
+output_folder: !ref ./results/<experiment_name>/<seed>
+save_folder: !ref <output_folder>/save
+train_log: !ref <output_folder>/train_log.txt
+
+add_wham_noise: False
+test_only: False
+
+wham_folder: null # Set it if add_wham_noise is True.
+wham_audio_folder: !ref <wham_folder>/tr
+
+# sample_rate: 22050
+signal_length_s: 5
+
+# Tensorboard logs
+use_tensorboard: False
+tensorboard_logs_folder: !ref <output_folder>/tb_logs/
+
+# Path where data manifest files will be stored
+train_annotation: !ref <data_folder>/train.json
+valid_annotation: !ref <data_folder>/valid.json
+test_annotation: !ref <data_folder>/test.json
+
+skip_prep: False
+
+ckpt_interval_minutes: 15 # save checkpoint every N min
+
+# Training parameters
+number_of_epochs: 30
+batch_size: 32
+lr: 0.0002
+base_lr: 0.000002
+max_lr: !ref <lr>
+step_size: 65000
+
+# Number of classes
+out_n_neurons: 10
+
+# Note that it's actually important to shuffle the data here
+shuffle: True
+dataloader_options:
+    batch_size: !ref <batch_size>
+    shuffle: !ref <shuffle>
+    num_workers: 0
+
+### Config for Tokenizer
+vocab_size: 1024
+num_codebooks: 2
+sample_rate: 16000
+
+# Feature parameters
+encoder_dim: 1024
+
+# Modules
+# EnCodec model (see https://huggingface.co/docs/transformers/v4.31.0/en/model_doc/encodec)
+codec: !new:speechbrain.lobes.models.discrete.speechtokenizer_interface.SpeechTokenizer_interface
+    source: fnlp/SpeechTokenizer  # Only the 24kHz version supports mono audio
+    save_path: !ref <save_folder>
+
+discrete_embedding_layer: !new:custom_model.Discrete_EmbeddingLayer
+    num_codebooks: !ref <num_codebooks>
+    vocab_size: !ref <vocab_size>
+    emb_dim: !ref <encoder_dim>
+
+attention_mlp: !new:custom_model.AttentionMLP
+    input_dim: !ref <encoder_dim>
+    hidden_dim: !ref <encoder_dim>
+     
+avg_pool: !new:speechbrain.lobes.models.ECAPA_TDNN.ECAPA_TDNN
+    input_size: !ref <encoder_dim>
+    channels: [1024, 1024, 1024, 1024, 3072]
+    kernel_sizes: [5, 3, 3, 3, 1]
+    dilations: [1, 2, 3, 4, 1]
+    attention_channels: 64
+    lin_neurons: 192
+
+classifier: !new:speechbrain.lobes.models.ECAPA_TDNN.Classifier
+    input_size: 192
+    out_neurons: !ref <out_n_neurons>
+
+model: !new:torch.nn.ModuleList
+    - [!ref <avg_pool>, !ref <classifier>, !ref <discrete_embedding_layer>, !ref <attention_mlp>]
+
+
+epoch_counter: !new:speechbrain.utils.epoch_loop.EpochCounter
+    limit: !ref <number_of_epochs>
+
+
+log_softmax: !new:speechbrain.nnet.activations.Softmax
+    apply_log: True
+
+compute_cost: !name:speechbrain.nnet.losses.nll_loss
+
+# opt_class: !name:torch.optim.Adam
+#     lr: !ref <lr>
+#     weight_decay: 0.000002
+
+# lr_annealing: !new:speechbrain.nnet.schedulers.CyclicLRScheduler
+#     base_lr: !ref <base_lr>
+#     max_lr: !ref <max_lr>
+#     step_size: !ref <step_size>
+model_opt_class: !name:torch.optim.Adam
+    lr: !ref <lr>
+
+
+lr_annealing_model: !new:speechbrain.nnet.schedulers.NewBobScheduler
+    initial_value: !ref <lr>
+    improvement_threshold: 0.0025
+    annealing_factor: 0.9
+    patient: 0
+# Logging + checkpoints
+train_logger: !new:speechbrain.utils.train_logger.FileTrainLogger
+    save_file: !ref <train_log>
+
+error_stats: !name:speechbrain.utils.metric_stats.MetricStats
+    metric: !name:speechbrain.nnet.losses.classification_error
+        reduction: batch
+
+checkpointer: !new:speechbrain.utils.checkpoints.Checkpointer
+    checkpoints_dir: !ref <save_folder>
+    recoverables:
+        attention_mlp: !ref <attention_mlp>
+        codec: !ref <codec>
+        discrete_embedding_layer: !ref <discrete_embedding_layer>
+        classifier: !ref <classifier>
+        counter: !ref <epoch_counter>
+        
+modules:
+    classifier: !ref <classifier>
+    attention_mlp: !ref <attention_mlp>
+    codec: !ref <codec>
+    avg_pool: !ref <avg_pool>
+    discrete_embedding_layer: !ref <discrete_embedding_layer>
