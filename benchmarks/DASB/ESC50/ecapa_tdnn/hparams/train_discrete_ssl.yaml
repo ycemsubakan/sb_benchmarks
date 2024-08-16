@@ -28,7 +28,6 @@ wham_folder: null # Set it if add_wham_noise is True.
 wham_audio_folder: !ref <wham_folder>/tr
 
 
-sample_rate: 16000
 signal_length_s: 5
 
 # Tensorboard logs
@@ -46,8 +45,28 @@ train_fold_nums: [1, 2, 3]
 valid_fold_nums: [4]
 test_fold_nums: [5]
 skip_manifest_creation: False
-
 ckpt_interval_minutes: 15 # save checkpoint every N min
+
+### Config for Tokenizer
+# Layer number should be among the supported layers for discrete SSL models(kmenas  model should be available for that layer)
+# ssl_layer_num: [0,1,2,3]
+# deduplicate: [False, False, False, False]
+# bpe_tokenizer_path: [null , null,  null, null]
+ssl_layer_num: [0, 1, 2, 3]
+num_codebooks: 4
+sample_rate: 16000
+
+# Feature parameters
+encoder_dim: 2048
+
+### Configuration for  discrete SSL model
+# ssl_model_type: hubert, wavlm, wav2vec2
+# ssl_hub: facebook/hubert-large-ll60k, microsoft/wavlm-large,  facebook/wav2vec2-large
+kmeans_repo_id: speechbrain/SSL_Quantization
+kmeans_cache_dir: !ref <save_folder>/kmeans_checkpoint
+kmeans_dataset: ESC50
+num_clusters: 128
+
 
 # Training parameters
 number_of_epochs: 200
@@ -56,7 +75,6 @@ lr: 0.0002
 base_lr: 0.0002
 max_lr: !ref <lr>
 step_size: 65000
-encoder_dim: 2048
 
 # Feature parameters
 n_mels: 80
@@ -90,15 +108,18 @@ compute_features: !new:speechbrain.lobes.features.Fbank
 
 
   
-codec: !new:train_discrete_ssl.DiscreteSSL_ESC50
-   ssl_model: cnn_14
-   kmeans_path: benchmarks/DASB/ESC50/kmeans-cluster-100
-   num_clusters: 100  # this is actually 128 -- to fix in cleaned-up repo 
-   layers_num: [0, 1,2,3]
+codec: !new:discrete_esc50.DiscreteSSL_ESC50
+   save_path: !ref <kmeans_cache_dir>
+   ssl_model: cnn14
+   kmeans_dataset: !ref <kmeans_dataset>
+   kmeans_repo_id: !ref <kmeans_repo_id>
+   num_clusters: !ref <num_clusters>
+   Ktarget: !ref <encoder_dim> 
+   layers_num: !ref <ssl_layer_num>
 
 
 discrete_embedding_layer: !new:custom_model.Discrete_EmbeddingLayer
-   num_codebooks: 4 
+   num_codebooks: !ref <num_codebooks>
    vocab_size: 129  # num_clusters + 1
    emb_dim: !ref <encoder_dim> 
 
@@ -106,6 +127,12 @@ discrete_embedding_layer: !new:custom_model.Discrete_EmbeddingLayer
 attention_mlp: !new:custom_model.AttentionMLP
    input_dim: !ref <encoder_dim>
    hidden_dim: !ref <encoder_dim>
+
+
+embedding_model: !new:speechbrain.lobes.models.Cnn14.Cnn14
+    mel_bins: !ref <n_mels>
+    emb_dim: !ref <encoder_dim>
+    return_reps: True
 
 avg_pool: !new:speechbrain.lobes.models.ECAPA_TDNN.ECAPA_TDNN
     input_size: !ref <encoder_dim>
@@ -118,11 +145,6 @@ avg_pool: !new:speechbrain.lobes.models.ECAPA_TDNN.ECAPA_TDNN
 classifier: !new:speechbrain.lobes.models.ECAPA_TDNN.Classifier
     input_size: 192
     out_neurons: !ref <out_n_neurons>
-
-embedding_model: !new:speechbrain.lobes.models.Cnn14.Cnn14
-    mel_bins: !ref <n_mels>
-    emb_dim: !ref <encoder_dim>
-    return_reps: True
 
 
 epoch_counter: !new:speechbrain.utils.epoch_loop.EpochCounter
