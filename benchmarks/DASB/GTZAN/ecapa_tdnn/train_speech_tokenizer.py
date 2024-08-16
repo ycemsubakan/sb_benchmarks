@@ -41,7 +41,6 @@ class MusGenreBrain(sb.Brain):
         genreid, _ = batch.genre_encoded
 
         """to meet the input form of nll loss"""
-        genreid = genreid.squeeze(1)
         loss = self.hparams.compute_cost(predictions, genreid)
         if stage != sb.Stage.TRAIN:
             self.error_metrics.append(batch.id, predictions, genreid)

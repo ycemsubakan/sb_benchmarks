@@ -33,9 +33,8 @@ class MusGenreBrain(sb.Brain):
         feats = torch.matmul(att_w.transpose(2, -1), embeddings).squeeze(-2)
 
         # last dim will be used for AdaptativeAVG pool
-        outputs = self.hparams.avg_pool(feats, wav_lens)
-        outputs = outputs.view(outputs.shape[0], -1)
-        outputs = self.modules.classifier(outputs)
+        embeddings = self.modules.avg_pool(feats, wav_lens)
+        outputs = self.modules.classifier(embeddings)
         outputs = self.hparams.log_softmax(outputs)
         return outputs
 
@@ -44,7 +43,6 @@ class MusGenreBrain(sb.Brain):
         genreid, _ = batch.genre_encoded
 
         """to meet the input form of nll loss"""
-        genreid = genreid.squeeze(1)
         loss = self.hparams.compute_cost(predictions, genreid)
         if stage != sb.Stage.TRAIN:
             self.error_metrics.append(batch.id, predictions, genreid)
