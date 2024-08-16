@@ -330,7 +330,7 @@ if __name__ == '__main__':
     # Data preparation, to be run on only one process.
     # Create dataset objects "train", "valid", and "test".
     datasets = dataio_prep()
-    tr_loader = make_dataloader(datasets['train'], batch_size=16)
+    tr_loader = make_dataloader(datasets['train'], batch_size=8)
 
 
     device = 'cuda'
