@@ -124,9 +124,9 @@ avg_pool: !new:speechbrain.lobes.models.ECAPA_TDNN.ECAPA_TDNN
     attention_channels: 64
     lin_neurons: 192
 
-classifier: !new:speechbrain.lobes.models.ECAPA_TDNN.Classifier
-    input_size: 192
-    out_neurons: !ref <out_n_neurons>
+classifier: !new:torch.nn.Linear
+    in_features: 192
+    out_features: !ref <out_n_neurons>
 
 
 epoch_counter: !new:speechbrain.utils.epoch_loop.EpochCounter
