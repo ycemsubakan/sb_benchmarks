@@ -74,7 +74,6 @@ class ESC50Brain(sb.core.Brain):
 
         feats = self.hparams.weighted_ssl(h)
         outputs = self.hparams.avg_pool(feats, lens)
-        outputs = outputs.view(outputs.shape[0], -1)
         outputs = self.modules.classifier(outputs)
         return outputs, lens
 

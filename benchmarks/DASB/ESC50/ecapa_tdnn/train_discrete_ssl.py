@@ -79,7 +79,6 @@ class ESC50Brain(sb.core.Brain):
         feats = torch.matmul(att_w.transpose(2, -1), embeddings).squeeze(-2)
         # last dim will be used for AdaptativeAVG pool
         outputs = self.hparams.avg_pool(feats, lens)
-        outputs = outputs.view(outputs.shape[0], -1)
         outputs = self.modules.classifier(outputs)
         return outputs, lens
 
